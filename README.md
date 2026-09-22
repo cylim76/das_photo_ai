@@ -240,6 +240,38 @@ sudo docker run --rm \
 `selected_verified_exact`和`rescued_verified_exact`。只有局部OCR真正读到完整11位且
 ISO 6346校验通过，才计为`verified_exact`。
 
+### 箱号校验位倾斜矫正与单字符定向测试
+
+`v032`配置用于重测上一轮仍未验证的照片。它在箱号横带上下各增加15%余量，增加轻微
+倾斜矫正，并把右侧校验位单独裁成一张小图进行OCR。程序只允许拼接OCR实际返回的单个
+数字；ISO 6346只负责验证，不会生成或选择图片中没有识别到的数字。
+
+```bash
+cd /home/lucas/rpa/das_photo_ai
+sudo docker run --rm \
+  --network host \
+  --user "$(id -u):$(id -g)" \
+  --entrypoint python \
+  -v "$PWD":/workspace:ro \
+  -v /home/lucas/ai-lab:/home/lucas/ai-lab \
+  -w /workspace \
+  das-photo-ai:0.3.0 \
+  -m scripts.evaluate_container_check_digit \
+  --profile v032 \
+  --retry-summary /home/lucas/ai-lab/evaluation-runs/v0.3.1-right30/summary.json \
+  --report /home/lucas/ai-lab/ocr_eval_manifest_v1_20260922.json \
+  --container-root /home/lucas/ai-lab/input/container_test \
+  --api-base http://127.0.0.1:8800/api/v1 \
+  --engine paddle_gpu \
+  --save-crops \
+  --output-dir /home/lucas/ai-lab/evaluation-runs/v0.3.2-check-digit
+```
+
+程序从上一份`summary.json`的`still_unverified_or_wrong`读取文件名，因此本次只测试剩余
+样本。生成的裁剪图保存在`output-dir/crops`，原始API响应保存在`raw`，拼接后的结果保存
+在`postprocessed`。重点检查`isolated_check_digit_detected`、`verified_exact`、
+`selected_false_verified`以及新的`still_unverified_or_wrong`。
+
 ## 模型文件
 
 模型权重和缓存不提交Git。容器通过宿主机目录挂载保存模型，重建容器不需要重新下载已有模型。
