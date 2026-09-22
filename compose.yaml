@@ -1,0 +1,27 @@
+services:
+  das-photo-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: das-photo-ai:0.2.0
+    container_name: das-photo-ai
+    restart: unless-stopped
+    runtime: nvidia
+    gpus: all
+    ports:
+      - "127.0.0.1:${DAS_AI_PORT:-8800}:8800"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      DAS_AI_HOST: 0.0.0.0
+      DAS_AI_PORT: 8800
+      DAS_AI_ENGINE: paddle_gpu
+      DAS_AI_PRELOAD_MODEL: "1"
+      DAS_AI_PADDLE_DEVICE: gpu:0
+      DAS_AI_PADDLE_OCR_VERSION: PP-OCRv5
+      DAS_AI_MAX_IMAGE_MB: 25
+    volumes:
+      - ${DAS_AI_PADDLEX_CACHE:-/home/lucas/ai-lab/cache/paddlex}:/root/.paddlex
+      - ${DAS_AI_PADDLEOCR_CACHE:-/home/lucas/ai-lab/cache/paddleocr}:/root/.paddleocr
+      - ${DAS_AI_MODELS_DIR:-./models}:/models

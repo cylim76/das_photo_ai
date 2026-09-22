@@ -1,0 +1,6 @@
+# Install this inside the verified Paddle GPU base image. The image already
+# contains the CUDA-enabled paddlepaddle package; do not install a CPU wheel.
+-r requirements.txt
+paddleocr==3.5.0
+paddlex==3.5.2
+
