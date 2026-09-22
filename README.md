@@ -2,10 +2,11 @@
 
 DAS Photo的独立OCR推理与业务字段提取服务。
 
-当前版本为`0.2.0`：Windows可以使用Mock/JSON进行开发测试；P3可以通过独立Docker容器使用PaddleOCR GPU直接识别图片。
+当前版本为`0.3.0`：Windows可以使用Mock/JSON进行开发测试；P3可以通过独立Docker容器使用PaddleOCR GPU直接识别图片。
 
 - [v1开发说明书](docs/development_plan_v1_20260922.md)
 - [v0.2.0评估基线](docs/evaluation_v0.2.0_20260922.md)
+- [v0.2.0 P3端到端评估](docs/p3_evaluation_v0.2.0_20260922.md)
 - [P3部署说明](docs/p3_deployment_v0.2.0_20260922.md)
 
 ## 当前能力
@@ -18,6 +19,8 @@ DAS Photo的独立OCR推理与业务字段提取服务。
 - 箱号提取、ISO 6346校验和校验位推算；
 - 区分`verified`、`unverified`和`mismatch`；
 - 铅封号候选提取与噪声过滤；
+- 铅封号原图、顺时针90度、逆时针90度自动识别与候选融合；
+- 箱号校验位区域裁剪、放大对照测试工具；
 - P3 GPU Docker部署配置；
 - 离线回归和自动测试。
 
@@ -154,6 +157,88 @@ Compose默认：
 ```
 
 正确答案只用于离线评估，运行时API不会读取DAS Photo数据库。
+
+先在Windows从已有评估数据生成不含本地路径的精简答案清单：
+
+```powershell
+.\.venv\Scripts\python -m scripts.create_evaluation_manifest `
+  D:\RPA\das_photo\.codex-tmp\ocr_eval\ocr_eval_data.json `
+  D:\RPA\ai-lab\ocr-eval-20260922\ocr_eval_manifest_v1_20260922.json
+```
+
+将清单复制到P3的`/home/lucas/ai-lab/`后，执行真实图片端到端评估：
+
+```bash
+python3 -m scripts.evaluate_image_api \
+  --report /home/lucas/ai-lab/ocr_eval_manifest_v1_20260922.json \
+  --container-root /home/lucas/ai-lab/container_test \
+  --seal-root /home/lucas/ai-lab/sealno_test \
+  --api-base http://127.0.0.1:8800/api/v1 \
+  --engine paddle_gpu \
+  --output-dir /home/lucas/ai-lab/evaluation-runs/v0.2.0-baseline
+```
+
+程序逐张调用图片接口，并保存`summary.json`、`details.json`、可续跑的
+`details.ndjson`及每张图片的原始API响应。中断后在相同命令末尾增加
+`--resume`即可跳过已经完成的图片；增加`--resume --retry-failures`可重试失败项。
+
+如果测试机本身保存DAS Photo数据库，也可以用`--database 数据库路径`代替
+`--report 答案清单路径`；数据库始终按只读模式打开。
+
+### 铅封号三方向对照测试
+
+三方向测试不会修改服务或原始照片。它将每张铅封照片以内存临时文件的形式生成原图、
+顺时针90度和逆时针90度三个版本，并通过现有图片API分别识别。P3可直接借用已经构建
+好的服务镜像运行脚本，无需在宿主机安装Pillow，也不会停止或重启正在运行的服务：
+
+```bash
+cd /home/lucas/rpa/das_photo_ai
+sudo docker run --rm \
+  --network host \
+  --user "$(id -u):$(id -g)" \
+  --entrypoint python \
+  -v "$PWD":/workspace:ro \
+  -v /home/lucas/ai-lab:/home/lucas/ai-lab \
+  -w /workspace \
+  das-photo-ai:0.2.0 \
+  -m scripts.evaluate_seal_orientations \
+  --report /home/lucas/ai-lab/ocr_eval_manifest_v1_20260922.json \
+  --seal-root /home/lucas/ai-lab/input/sealno_test \
+  --api-base http://127.0.0.1:8800/api/v1 \
+  --engine paddle_gpu \
+  --output-dir /home/lucas/ai-lab/evaluation-runs/v0.2.0-seal-orientations
+```
+
+输出目录包含`summary.json`、逐图`comparison.csv`、`details.json`和三个方向各自的原始
+API响应。测试中断后，在同一命令末尾增加`--resume`即可继续。
+
+### 箱号校验位局部OCR对照测试
+
+箱号优化与铅封方向优化是两条独立验收线。下面的程序先识别原图，再根据图片中已经
+观察到的箱主代码和序列号坐标，生成局部2倍、4倍和彩色转灰度4倍临时裁剪图，分别调用
+现有API。它不会用ISO计算值冒充图片观察到的第11位，也不会修改原图、数据库或主服务：
+
+```bash
+cd /home/lucas/rpa/das_photo_ai
+sudo docker run --rm \
+  --network host \
+  --user "$(id -u):$(id -g)" \
+  --entrypoint python \
+  -v "$PWD":/workspace:ro \
+  -v /home/lucas/ai-lab:/home/lucas/ai-lab \
+  -w /workspace \
+  das-photo-ai:0.3.0 \
+  -m scripts.evaluate_container_check_digit \
+  --report /home/lucas/ai-lab/ocr_eval_manifest_v1_20260922.json \
+  --container-root /home/lucas/ai-lab/input/container_test \
+  --api-base http://127.0.0.1:8800/api/v1 \
+  --engine paddle_gpu \
+  --output-dir /home/lucas/ai-lab/evaluation-runs/v0.3.0-container-check-digit
+```
+
+结果重点查看`summary.json`中的`baseline_verified_exact`、
+`selected_verified_exact`和`rescued_verified_exact`。只有局部OCR真正读到完整11位且
+ISO 6346校验通过，才计为`verified_exact`。
 
 ## 模型文件
 

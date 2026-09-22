@@ -3,16 +3,19 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.domain import EngineInput, OCRDocument
+from app.domain import EngineInput, OCRDocument, OCRItem
 from app.engines.base import EngineError, EngineUnavailableError, OcrEngine
 from app.engines.json_adapter import adapt_ocr_json
 
 
 _ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+_ORIENTATIONS = ("original", "cw90", "ccw90")
 
 
 def _image_suffix(filename: str | None) -> str:
@@ -126,3 +129,142 @@ class PaddleOcrEngine(OcrEngine):
                     os.unlink(temporary_path)
                 except FileNotFoundError:
                     pass
+
+    def recognize_orientations(
+        self,
+        input_data: EngineInput,
+        orientations: tuple[str, ...] = _ORIENTATIONS,
+    ) -> dict[str, OCRDocument]:
+        """Run OCR on normalized image orientations and keep original coordinates.
+
+        Rotated OCR is deliberately implemented in the engine rather than the seal
+        extractor. This keeps OCR concerns separate from field-ranking rules and
+        lets every returned candidate still point to the original uploaded image.
+        """
+
+        if not input_data.image_bytes:
+            raise EngineError(f"{self.name} engine requires an uploaded image")
+        invalid = [item for item in orientations if item not in _ORIENTATIONS]
+        if invalid:
+            raise EngineError(f"unsupported image orientation: {invalid[0]}")
+
+        try:
+            from PIL import Image, ImageOps
+        except ImportError as exc:
+            raise EngineUnavailableError(
+                "Pillow is required for multi-orientation seal recognition"
+            ) from exc
+
+        try:
+            with Image.open(BytesIO(input_data.image_bytes)) as opened:
+                normalized = ImageOps.exif_transpose(opened).convert("RGB")
+                original_width, original_height = normalized.size
+                with tempfile.TemporaryDirectory(prefix="das-photo-ai-orientations-") as name:
+                    temporary_root = Path(name)
+                    documents: dict[str, OCRDocument] = {}
+                    for orientation in orientations:
+                        if orientation == "original":
+                            variant = normalized
+                        elif orientation == "cw90":
+                            variant = normalized.transpose(Image.Transpose.ROTATE_270)
+                        else:
+                            variant = normalized.transpose(Image.Transpose.ROTATE_90)
+
+                        image_path = temporary_root / f"{orientation}.png"
+                        variant.save(image_path, format="PNG")
+                        document = self._recognize_path(
+                            image_path,
+                            input_data.image_filename,
+                            orientation,
+                        )
+                        documents[orientation] = _restore_original_coordinates(
+                            document,
+                            orientation,
+                            original_width,
+                            original_height,
+                        )
+                    return documents
+        except (EngineError, EngineUnavailableError):
+            raise
+        except Exception as exc:
+            raise EngineError(f"PaddleOCR orientation inference failed: {exc}") from exc
+
+    def _recognize_path(
+        self,
+        image_path: Path,
+        image_filename: str | None,
+        orientation: str,
+    ) -> OCRDocument:
+        with self._predict_lock:
+            results = list(self._pipeline.predict(str(image_path)))
+        if not results:
+            raise EngineError("PaddleOCR returned no result for the uploaded image")
+        document = adapt_ocr_json(
+            _result_payload(results[0]),
+            source=f"paddleocr:{self._device}",
+        )
+        metadata = dict(document.metadata)
+        metadata.update(
+            {
+                "engine": self.name,
+                "device": self._device,
+                "filename": image_filename,
+                "ocr_version": self._settings.paddle_ocr_version,
+                "orientation": orientation,
+            }
+        )
+        return OCRDocument(
+            items=document.items,
+            source=document.source,
+            metadata=metadata,
+        )
+
+
+def _restore_original_coordinates(
+    document: OCRDocument,
+    orientation: str,
+    original_width: int,
+    original_height: int,
+) -> OCRDocument:
+    if orientation == "original":
+        return document
+
+    def restore_point(x: float, y: float) -> tuple[float, float]:
+        if orientation == "cw90":
+            original_x, original_y = y, original_height - x
+        else:
+            original_x, original_y = original_width - y, x
+        return (
+            min(float(original_width), max(0.0, original_x)),
+            min(float(original_height), max(0.0, original_y)),
+        )
+
+    restored_items: list[OCRItem] = []
+    for item in document.items:
+        polygon = tuple(restore_point(x, y) for x, y in item.polygon)
+        if not polygon and item.box is not None:
+            left, top, right, bottom = item.box
+            polygon = tuple(
+                restore_point(x, y)
+                for x, y in (
+                    (left, top),
+                    (right, top),
+                    (right, bottom),
+                    (left, bottom),
+                )
+            )
+        if polygon:
+            xs = [point[0] for point in polygon]
+            ys = [point[1] for point in polygon]
+            box = (min(xs), min(ys), max(xs), max(ys))
+        else:
+            box = None
+        restored_items.append(replace(item, polygon=polygon, box=box))
+
+    metadata = dict(document.metadata)
+    metadata["coordinates"] = "original_image"
+    return OCRDocument(
+        items=tuple(restored_items),
+        source=document.source,
+        metadata=metadata,
+    )

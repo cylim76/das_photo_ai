@@ -8,6 +8,8 @@ __pycache__/
 venv/
 .env
 output/
+evaluation_runs/
+.codex-tmp/
 cache/
 *.log
 models/*

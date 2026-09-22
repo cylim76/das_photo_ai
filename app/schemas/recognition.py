@@ -58,6 +58,9 @@ class CandidateResponse(BaseModel):
     source_texts: list[str] = Field(default_factory=list)
     source_indices: list[int] = Field(default_factory=list)
     boxes: list[list[float]] = Field(default_factory=list)
+    orientation: str = "original"
+    supporting_orientations: list[str] = Field(default_factory=list)
+    selection_reasons: list[str] = Field(default_factory=list)
 
 
 class FieldResultResponse(BaseModel):
@@ -73,6 +76,7 @@ class FieldResultResponse(BaseModel):
     observed_check_digit: str | None = None
     calculated_check_digit: str | None = None
     check_digit_source: Literal["observed", "calculated"] | None = None
+    orientation: str | None = None
     candidates: list[CandidateResponse] = Field(default_factory=list)
 
 

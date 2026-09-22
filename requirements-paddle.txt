@@ -3,4 +3,4 @@
 -r requirements.txt
 paddleocr==3.5.0
 paddlex==3.5.2
-
+Pillow>=10,<13

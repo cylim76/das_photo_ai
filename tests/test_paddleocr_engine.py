@@ -1,7 +1,10 @@
 import os
 import sys
 import types
+from io import BytesIO
 from pathlib import Path
+
+from PIL import Image
 
 from app.config import Settings
 from app.domain import EngineInput
@@ -95,3 +98,43 @@ def test_factory_reuses_loaded_paddle_model(monkeypatch) -> None:
 
     assert first is second
     assert state["initializations"] == 1
+
+
+def test_multi_orientation_restores_boxes_to_original_image(monkeypatch) -> None:
+    sizes: list[tuple[int, int]] = []
+
+    class FakeResult:
+        json = {
+            "res": {
+                "rec_texts": ["V542613"],
+                "rec_scores": [0.99],
+                "rec_boxes": [[0, 0, 10, 20]],
+            }
+        }
+
+    class FakePaddleOCR:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def predict(self, image_path: str):
+            with Image.open(image_path) as image:
+                sizes.append(image.size)
+            return [FakeResult()]
+
+    module = types.ModuleType("paddleocr")
+    module.PaddleOCR = FakePaddleOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "paddleocr", module)
+
+    image_buffer = BytesIO()
+    Image.new("RGB", (40, 20), "white").save(image_buffer, format="PNG")
+    engine = PaddleOcrEngine("paddle_cpu", Settings())
+
+    documents = engine.recognize_orientations(
+        EngineInput(image_bytes=image_buffer.getvalue(), image_filename="sample.png")
+    )
+
+    assert sizes == [(40, 20), (20, 40), (20, 40)]
+    assert documents["original"].items[0].box == (0.0, 0.0, 10.0, 20.0)
+    assert documents["cw90"].items[0].box == (0.0, 10.0, 20.0, 20.0)
+    assert documents["ccw90"].items[0].box == (20.0, 0.0, 40.0, 10.0)
+    assert documents["cw90"].metadata["coordinates"] == "original_image"

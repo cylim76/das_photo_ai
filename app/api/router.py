@@ -66,6 +66,7 @@ def models(settings: Settings = Depends(get_settings)) -> dict[str, object]:
             "ocr_version": settings.paddle_ocr_version,
             "language": settings.paddle_lang,
             "gpu_device": settings.paddle_device,
+            "seal_multi_orientation": settings.seal_multi_orientation,
         },
     }
 

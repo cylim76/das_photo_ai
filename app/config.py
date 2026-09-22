@@ -8,7 +8,7 @@ from functools import lru_cache
 @dataclass(frozen=True, slots=True)
 class Settings:
     app_name: str = "DAS Photo AI"
-    version: str = "0.2.0"
+    version: str = "0.3.0"
     api_prefix: str = "/api/v1"
     host: str = "127.0.0.1"
     port: int = 8800
@@ -22,6 +22,7 @@ class Settings:
     paddle_ocr_version: str = "PP-OCRv5"
     paddle_detection_model: str | None = None
     paddle_recognition_model: str | None = None
+    seal_multi_orientation: bool = True
 
     @property
     def max_image_bytes(self) -> int:
@@ -55,4 +56,8 @@ def get_settings() -> Settings:
         paddle_ocr_version=os.getenv("DAS_AI_PADDLE_OCR_VERSION", "PP-OCRv5").strip(),
         paddle_detection_model=_env_optional("DAS_AI_PADDLE_DET_MODEL"),
         paddle_recognition_model=_env_optional("DAS_AI_PADDLE_REC_MODEL"),
+        seal_multi_orientation=_env_bool(
+            "DAS_AI_SEAL_MULTI_ORIENTATION",
+            default=True,
+        ),
     )

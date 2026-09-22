@@ -54,6 +54,9 @@ class ExtractionCandidate:
     observed_check_digit: str | None = None
     calculated_check_digit: str | None = None
     check_digit_source: str | None = None
+    orientation: str = "original"
+    supporting_orientations: tuple[str, ...] = ()
+    selection_reasons: tuple[str, ...] = ()
 
 
 def compact_alphanumeric(value: str) -> str:

@@ -8,6 +8,7 @@ from app.domain import EngineInput, OCRDocument
 from app.engines import create_engine
 from app.pipelines import extract_container_numbers, extract_seal_numbers
 from app.pipelines.common import ExtractionCandidate
+from app.pipelines.seal_fusion import fuse_seal_candidates
 from app.schemas.recognition import (
     CandidateResponse,
     FieldResultResponse,
@@ -18,7 +19,7 @@ from app.schemas.recognition import (
 )
 
 
-EXTRACTOR_VERSION = "0.2.0"
+EXTRACTOR_VERSION = "0.3.0"
 
 
 def _candidate_response(candidate: ExtractionCandidate) -> CandidateResponse:
@@ -38,6 +39,9 @@ def _candidate_response(candidate: ExtractionCandidate) -> CandidateResponse:
         source_texts=list(candidate.source_texts),
         source_indices=list(candidate.source_indices),
         boxes=[list(box) for box in candidate.boxes],
+        orientation=candidate.orientation,
+        supporting_orientations=list(candidate.supporting_orientations),
+        selection_reasons=list(candidate.selection_reasons),
     )
 
 
@@ -62,6 +66,7 @@ def _field_result(
         observed_check_digit=best.observed_check_digit,
         calculated_check_digit=best.calculated_check_digit,
         check_digit_source=best.check_digit_source,
+        orientation=best.orientation,
         candidates=responses,
     )
 
@@ -89,14 +94,32 @@ def _recognize_with_input(
 ) -> RecognizeResponse:
     started = time.perf_counter()
     engine = create_engine(engine_name, settings)
-    document = engine.recognize(input_data)
+    recognize_orientations = getattr(engine, "recognize_orientations", None)
+    if (
+        input_data.image_bytes
+        and "seal_number" in targets
+        and settings.seal_multi_orientation
+        and callable(recognize_orientations)
+    ):
+        documents = recognize_orientations(input_data)
+        document = documents["original"]
+    else:
+        document = engine.recognize(input_data)
+        documents = {"original": document}
 
     results: dict[TargetName, FieldResultResponse] = {}
     for target in targets:
         if target == "container_number":
             candidates = extract_container_numbers(document, settings.max_candidates)
         else:
-            candidates = extract_seal_numbers(document, settings.max_candidates)
+            candidates_by_orientation = {
+                orientation: extract_seal_numbers(variant, settings.max_candidates)
+                for orientation, variant in documents.items()
+            }
+            candidates = fuse_seal_candidates(
+                candidates_by_orientation,
+                settings.max_candidates,
+            )
         results[target] = _field_result(target, candidates)
 
     elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
