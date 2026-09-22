@@ -6,7 +6,9 @@ from typing import Any, Protocol
 
 from PIL import Image, ImageOps
 
+from app.domain import OCRDocument
 from app.pipelines.common import ExtractionCandidate, clamp_score
+from app.pipelines.container_number import extract_container_numbers
 from app.validators.iso6346 import append_check_digit, validate_container_number
 
 
@@ -221,6 +223,57 @@ def create_check_digit_variants(
     }
 
 
+def create_context_variants(
+    image_bytes: bytes,
+    candidate: ExtractionCandidate,
+) -> tuple[dict[str, Image.Image], dict[str, Any]]:
+    """Reproduce the validated v0.3 context crops for rare direct-recognition failures."""
+
+    if len(candidate.observed_value) != 10 or not candidate.boxes:
+        raise ValueError("context fallback requires a boxed 10-character candidate")
+    with Image.open(BytesIO(image_bytes)) as opened:
+        image = ImageOps.exif_transpose(opened).convert("RGB")
+    image_width, image_height = image.size
+    left = min(float(box[0]) for box in candidate.boxes)
+    top = min(float(box[1]) for box in candidate.boxes)
+    right = max(float(box[2]) for box in candidate.boxes)
+    bottom = max(float(box[3]) for box in candidate.boxes)
+    text_height = max(1.0, bottom - top)
+    crop_box = (
+        max(0, int(left - text_height * 0.8)),
+        max(0, int(top - text_height * 1.0)),
+        min(image_width, int(right + text_height * 3.0)),
+        min(image_height, int(bottom + text_height * 1.0)),
+    )
+    if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
+        raise ValueError("calculated context crop is empty")
+    cropped = image.crop(crop_box)
+    try:
+        context_2x = cropped.resize(
+            (cropped.width * 2, cropped.height * 2),
+            Image.Resampling.LANCZOS,
+        )
+        context_4x = cropped.resize(
+            (cropped.width * 4, cropped.height * 4),
+            Image.Resampling.LANCZOS,
+        )
+        variants = {
+            "context_2x": context_2x,
+            "context_4x": context_4x,
+            "grayscale_4x": ImageOps.autocontrast(
+                ImageOps.grayscale(context_4x)
+            ).convert("RGB"),
+        }
+    finally:
+        cropped.close()
+        image.close()
+    return variants, {
+        "source_candidate": candidate.observed_value,
+        "source_boxes": [list(box) for box in candidate.boxes],
+        "crop_box": list(crop_box),
+    }
+
+
 def select_digit_without_truth(
     recognitions: dict[str, dict[str, Any]],
     *,
@@ -321,21 +374,49 @@ def apply_check_digit_fallback(
     if observed_digit is None:
         return None, metadata
 
+    completed = complete_candidate_with_observed_digit(
+        candidate,
+        str(observed_digit),
+        digit_confidence=float(selection.get("score") or 0.0),
+        reason="check_digit_direct_recognition",
+        selection_reason=str(selection["reason"]),
+    )
+    suggested = append_check_digit(candidate.observed_value)
+    metadata.update(
+        {
+            "status": "applied",
+            "observed_value": completed.observed_value,
+            "verification": completed.verification,
+            "calculated_check_digit": suggested[-1],
+        }
+    )
+    return completed, metadata
+
+
+def complete_candidate_with_observed_digit(
+    candidate: ExtractionCandidate,
+    observed_digit: str,
+    *,
+    digit_confidence: float,
+    reason: str,
+    selection_reason: str,
+    additional_corrections: int = 0,
+) -> ExtractionCandidate:
     observed = f"{candidate.observed_value}{observed_digit}"
     suggested = append_check_digit(candidate.observed_value)
     verified = validate_container_number(observed)
     verification = "verified" if verified else "mismatch"
     validation = "valid" if verified else "invalid"
-    digit_confidence = float(selection.get("score") or 0.0)
     confidence = round((candidate.ocr_confidence + digit_confidence) / 2, 6)
     rule_score = 1.0 if verified else 0.30
+    corrections = max(candidate.corrections, additional_corrections)
     extraction_score = clamp_score(
         confidence * 0.62
         + rule_score * 0.33
         + 0.05
-        - candidate.corrections * 0.055
+        - corrections * 0.055
     )
-    completed = ExtractionCandidate(
+    return ExtractionCandidate(
         value=observed,
         observed_value=observed,
         suggested_value=suggested,
@@ -347,7 +428,7 @@ def apply_check_digit_fallback(
         calculated_check_digit=suggested[-1],
         check_digit_source="observed",
         inferred=False,
-        corrections=candidate.corrections,
+        corrections=corrections,
         source_texts=candidate.source_texts,
         source_indices=candidate.source_indices,
         boxes=candidate.boxes,
@@ -355,16 +436,67 @@ def apply_check_digit_fallback(
         supporting_orientations=candidate.supporting_orientations,
         selection_reasons=(
             *candidate.selection_reasons,
-            "check_digit_direct_recognition",
-            str(selection["reason"]),
+            reason,
+            selection_reason,
         ),
+    )
+
+
+def apply_context_check_digit_fallback(
+    candidate: ExtractionCandidate,
+    documents: dict[str, OCRDocument],
+    *,
+    max_candidates: int,
+) -> tuple[ExtractionCandidate | None, dict[str, Any]]:
+    evaluations: dict[str, dict[str, Any]] = {}
+    eligible: list[tuple[str, ExtractionCandidate]] = []
+    for variant, document in documents.items():
+        candidates = extract_container_numbers(document, max_candidates)
+        matching = [
+            item
+            for item in candidates
+            if len(item.observed_value) == 11
+            and item.observed_value[:10] == candidate.observed_value
+            and item.verification == "verified"
+        ]
+        best = matching[0] if matching else (candidates[0] if candidates else None)
+        evaluations[variant] = {
+            "observed_value": best.observed_value if best else None,
+            "verification": best.verification if best else None,
+            "ocr_confidence": best.ocr_confidence if best else None,
+            "extraction_score": best.extraction_score if best else None,
+        }
+        eligible.extend((variant, item) for item in matching)
+
+    metadata: dict[str, Any] = {
+        "status": "not_found",
+        "strategy": "context_crop_general_ocr",
+        "variants": evaluations,
+    }
+    if not eligible:
+        return None, metadata
+    selected_variant, selected = max(
+        eligible,
+        key=lambda item: (
+            item[1].extraction_score,
+            item[1].ocr_confidence,
+            -item[1].corrections,
+        ),
+    )
+    completed = complete_candidate_with_observed_digit(
+        candidate,
+        selected.observed_value[-1],
+        digit_confidence=selected.ocr_confidence,
+        reason="context_crop_general_ocr",
+        selection_reason=f"verified_full_number:{selected_variant}",
+        additional_corrections=selected.corrections,
     )
     metadata.update(
         {
             "status": "applied",
-            "observed_value": observed,
-            "verification": verification,
-            "calculated_check_digit": suggested[-1],
+            "selected_variant": selected_variant,
+            "observed_value": completed.observed_value,
+            "verification": completed.verification,
         }
     )
     return completed, metadata

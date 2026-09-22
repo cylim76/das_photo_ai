@@ -16,6 +16,7 @@ def test_compose_uses_verified_gpu_image_and_persistent_caches() -> None:
     assert service["environment"]["DAS_AI_PRELOAD_MODEL"] == "1"
     assert service["environment"]["DAS_AI_CONTAINER_CHECK_DIGIT_FALLBACK"] == "1"
     assert service["environment"]["DAS_AI_CHECK_DIGIT_MODEL"] == "en_PP-OCRv5_mobile_rec"
+    assert service["environment"]["DAS_AI_CHECK_DIGIT_MIN_SINGLE_SCORE"] == "0.65"
     assert any("/root/.paddlex" in volume for volume in service["volumes"])
     assert any("/root/.paddleocr" in volume for volume in service["volumes"])
 

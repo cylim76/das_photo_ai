@@ -138,3 +138,44 @@ def test_multi_orientation_restores_boxes_to_original_image(monkeypatch) -> None
     assert documents["cw90"].items[0].box == (0.0, 10.0, 20.0, 20.0)
     assert documents["ccw90"].items[0].box == (20.0, 0.0, 40.0, 10.0)
     assert documents["cw90"].metadata["coordinates"] == "original_image"
+
+
+def test_paddle_engine_recognizes_prepared_image_variants(monkeypatch) -> None:
+    seen: list[str] = []
+
+    class FakeResult:
+        json = {
+            "res": {
+                "rec_texts": ["HASU", "5060396"],
+                "rec_scores": [0.99, 0.98],
+                "rec_boxes": [[1, 2, 3, 4], [5, 6, 7, 8]],
+            }
+        }
+
+    class FakePaddleOCR:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def predict(self, image_path: str):
+            seen.append(Path(image_path).stem)
+            return [FakeResult()]
+
+    module = types.ModuleType("paddleocr")
+    module.PaddleOCR = FakePaddleOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "paddleocr", module)
+    engine = PaddleOcrEngine("paddle_cpu", Settings())
+
+    documents = engine.recognize_images(
+        {
+            "context_2x": Image.new("RGB", (100, 50), "white"),
+            "grayscale_4x": Image.new("RGB", (200, 100), "gray"),
+        },
+        "sample.png",
+    )
+
+    assert seen == ["context_2x", "grayscale_4x"]
+    assert [item.text for item in documents["context_2x"].items] == [
+        "HASU",
+        "5060396",
+    ]
+    assert documents["grayscale_4x"].metadata["orientation"] == "grayscale_4x"

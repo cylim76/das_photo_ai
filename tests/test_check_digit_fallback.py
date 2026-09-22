@@ -2,8 +2,11 @@ from io import BytesIO
 
 from PIL import Image, ImageDraw
 
+from app.domain import OCRDocument, OCRItem
 from app.pipelines.check_digit_fallback import (
     apply_check_digit_fallback,
+    apply_context_check_digit_fallback,
+    create_context_variants,
     crop_inside_check_digit_box,
     normalize_single_digit,
     select_digit_without_truth,
@@ -73,6 +76,21 @@ def test_select_digit_uses_consensus_without_iso() -> None:
 
     assert selection["digit"] == "6"
     assert selection["reason"] == "variant_consensus"
+
+
+def test_select_digit_accepts_one_clear_result_at_v041_threshold() -> None:
+    selection = select_digit_without_truth(
+        {
+            "boxed_color": {"text": "7", "score": 0.663281},
+            "boxed_gray": {"text": "07", "score": 0.816045},
+            "inner_gray": {"text": "I", "score": 0.306102},
+        },
+        minimum_candidate_score=0.50,
+        minimum_single_score=0.65,
+    )
+
+    assert selection["digit"] == "7"
+    assert selection["reason"] == "high_confidence_single_result"
 
 
 def test_check_digit_fallback_builds_verified_observed_candidate() -> None:
@@ -164,3 +182,40 @@ def test_crop_inside_box_keeps_an_image_when_border_is_broken() -> None:
     assert cropped.width > 0
     assert cropped.height > 0
     assert "box_detected" in metadata
+
+
+def test_context_fallback_accepts_independently_observed_verified_number() -> None:
+    documents = {
+        "context_2x": OCRDocument(
+            items=(
+                OCRItem("HASU", 0.98, box=(10, 10, 80, 40), source_index=0),
+                OCRItem("5060396", 0.97, box=(90, 10, 220, 40), source_index=1),
+            ),
+            source="context-test",
+        ),
+        "context_4x": OCRDocument(items=(), source="context-test"),
+    }
+
+    completed, metadata = apply_context_check_digit_fallback(
+        source_candidate(),
+        documents,
+        max_candidates=10,
+    )
+
+    assert completed is not None
+    assert completed.observed_value == "HASU5060396"
+    assert completed.verification == "verified"
+    assert metadata["status"] == "applied"
+    assert metadata["selected_variant"] == "context_2x"
+    assert "context_crop_general_ocr" in completed.selection_reasons
+
+
+def test_context_variants_include_the_three_validated_profiles() -> None:
+    variants, metadata = create_context_variants(image_bytes(), source_candidate())
+
+    assert set(variants) == {"context_2x", "context_4x", "grayscale_4x"}
+    assert metadata["crop_box"] == [18, 60, 420, 180]
+    assert variants["context_2x"].size == (804, 240)
+    assert variants["context_4x"].size == (1608, 480)
+    assert variants["context_4x"].width == variants["context_2x"].width * 2
+    assert metadata["source_candidate"] == "HASU506039"

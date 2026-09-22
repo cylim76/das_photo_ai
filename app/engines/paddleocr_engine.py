@@ -7,6 +7,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 from app.config import Settings
 from app.domain import EngineInput, OCRDocument, OCRItem
 from app.engines.base import EngineError, EngineUnavailableError, OcrEngine
@@ -188,6 +190,31 @@ class PaddleOcrEngine(OcrEngine):
             raise
         except Exception as exc:
             raise EngineError(f"PaddleOCR orientation inference failed: {exc}") from exc
+
+    def recognize_images(
+        self,
+        images: dict[str, Image.Image],
+        image_filename: str | None = None,
+    ) -> dict[str, OCRDocument]:
+        """Recognize prepared in-memory variants with the already-loaded OCR model."""
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="das-ai-ocr-variants-") as name:
+                root = Path(name)
+                documents: dict[str, OCRDocument] = {}
+                for variant, image in images.items():
+                    image_path = root / f"{variant}.png"
+                    image.convert("RGB").save(image_path, format="PNG")
+                    documents[variant] = self._recognize_path(
+                        image_path,
+                        image_filename,
+                        variant,
+                    )
+                return documents
+        except EngineError:
+            raise
+        except Exception as exc:
+            raise EngineError(f"PaddleOCR variant inference failed: {exc}") from exc
 
     def _recognize_path(
         self,

@@ -9,7 +9,11 @@ from app.domain import EngineInput, OCRDocument
 from app.engines import create_engine
 from app.engines.check_digit_recognizer import create_check_digit_recognizer
 from app.pipelines import extract_container_numbers, extract_seal_numbers
-from app.pipelines.check_digit_fallback import apply_check_digit_fallback
+from app.pipelines.check_digit_fallback import (
+    apply_check_digit_fallback,
+    apply_context_check_digit_fallback,
+    create_context_variants,
+)
 from app.pipelines.common import ExtractionCandidate
 from app.pipelines.seal_fusion import fuse_seal_candidates
 from app.schemas.recognition import (
@@ -22,7 +26,7 @@ from app.schemas.recognition import (
 )
 
 
-EXTRACTOR_VERSION = "0.4.0"
+EXTRACTOR_VERSION = "0.4.1"
 logger = logging.getLogger(__name__)
 
 
@@ -85,9 +89,10 @@ def _apply_container_check_digit_fallback(
     *,
     candidates: list[ExtractionCandidate],
     image_bytes: bytes | None,
-    engine_name: str,
+    engine: object,
     settings: Settings,
 ) -> tuple[list[ExtractionCandidate], dict[str, object]]:
+    engine_name = str(getattr(engine, "name", ""))
     if (
         not settings.container_check_digit_fallback
         or not image_bytes
@@ -121,10 +126,65 @@ def _apply_container_check_digit_fallback(
             minimum_candidate_score=settings.check_digit_min_candidate_score,
             minimum_single_score=settings.check_digit_min_single_score,
         )
-        if completed is None:
-            return candidates, metadata
-        remaining = [candidate for candidate in candidates[1:] if candidate.value != completed.value]
-        return [completed, *remaining], metadata
+        if completed is not None and completed.verification == "verified":
+            remaining = [
+                candidate
+                for candidate in candidates[1:]
+                if candidate.value != completed.value
+            ]
+            return [completed, *remaining], metadata
+
+        recognize_images = getattr(engine, "recognize_images", None)
+        if not callable(recognize_images):
+            if completed is None:
+                return candidates, metadata
+            remaining = [
+                candidate
+                for candidate in candidates[1:]
+                if candidate.value != completed.value
+            ]
+            return [completed, *remaining], metadata
+
+        context_images, context_preprocessing = create_context_variants(
+            image_bytes,
+            best,
+        )
+        try:
+            context_documents = recognize_images(context_images, None)
+        finally:
+            for context_image in context_images.values():
+                context_image.close()
+        context_completed, context_metadata = apply_context_check_digit_fallback(
+            best,
+            context_documents,
+            max_candidates=settings.max_candidates,
+        )
+        context_metadata["preprocessing"] = context_preprocessing
+        metadata["context_fallback"] = context_metadata
+        if context_completed is None:
+            if completed is None:
+                return candidates, metadata
+            remaining = [
+                candidate
+                for candidate in candidates[1:]
+                if candidate.value != completed.value
+            ]
+            return [completed, *remaining], metadata
+
+        metadata.update(
+            {
+                "status": "applied",
+                "strategy": "context_crop_general_ocr_after_direct_recognition",
+                "observed_value": context_completed.observed_value,
+                "verification": context_completed.verification,
+            }
+        )
+        remaining = [
+            candidate
+            for candidate in candidates[1:]
+            if candidate.value != context_completed.value
+        ]
+        return [context_completed, *remaining], metadata
     except Exception as exc:  # Optional fallback must not erase the primary OCR result.
         logger.warning("container check-digit fallback failed: %s", exc)
         return candidates, {
@@ -179,7 +239,7 @@ def _recognize_with_input(
             candidates, postprocessing = _apply_container_check_digit_fallback(
                 candidates=candidates,
                 image_bytes=input_data.image_bytes,
-                engine_name=engine.name,
+                engine=engine,
                 settings=settings,
             )
         else:

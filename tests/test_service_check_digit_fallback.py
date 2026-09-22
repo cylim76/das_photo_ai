@@ -55,6 +55,33 @@ class FakeRecognizer:
         }
 
 
+class EmptyRecognizer(FakeRecognizer):
+    def recognize(self, _images):
+        return {
+            "boxed_color": {"text": "E", "score": 0.16},
+            "boxed_gray": {"text": "B", "score": 0.23},
+            "inner_gray": {"text": "[", "score": 0.50},
+        }
+
+
+class WrongConsensusRecognizer(FakeRecognizer):
+    def recognize(self, _images):
+        return {
+            "boxed_color": {"text": "2", "score": 0.62},
+            "boxed_gray": {"text": "2", "score": 0.79},
+            "inner_gray": {"text": "6", "score": 0.99},
+        }
+
+
+class ContextFakeEngine(FakeEngine):
+    def recognize_images(self, _images, _image_filename):
+        return {
+            "context_2x": document("6"),
+            "context_4x": OCRDocument(items=(), source="test:paddle"),
+            "grayscale_4x": OCRDocument(items=(), source="test:paddle"),
+        }
+
+
 def test_image_service_applies_check_digit_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.service.create_engine",
@@ -130,3 +157,58 @@ def test_optional_fallback_error_keeps_primary_result(monkeypatch) -> None:
     assert result.observed_value == "HASU506039"
     assert result.verification == "unverified"
     assert result.postprocessing["status"] == "error"
+
+
+def test_image_service_uses_context_ocr_after_direct_not_found(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.service.create_engine",
+        lambda *_args: ContextFakeEngine(document()),
+    )
+    monkeypatch.setattr(
+        "app.service.create_check_digit_recognizer",
+        lambda *_args: EmptyRecognizer(),
+    )
+
+    response = recognize_image(
+        image_bytes=uploaded_image(),
+        image_filename="sample.png",
+        targets=["container_number"],
+        engine_name="paddle_gpu",
+        request_id=None,
+        settings=Settings(container_check_digit_fallback=True),
+    )
+
+    result = response.results["container_number"]
+    assert result.observed_value == "HASU5060396"
+    assert result.verification == "verified"
+    assert result.postprocessing["status"] == "applied"
+    assert result.postprocessing["strategy"] == (
+        "context_crop_general_ocr_after_direct_recognition"
+    )
+    assert result.postprocessing["context_fallback"]["selected_variant"] == "context_2x"
+
+
+def test_context_ocr_overrides_direct_mismatch(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.service.create_engine",
+        lambda *_args: ContextFakeEngine(document()),
+    )
+    monkeypatch.setattr(
+        "app.service.create_check_digit_recognizer",
+        lambda *_args: WrongConsensusRecognizer(),
+    )
+
+    response = recognize_image(
+        image_bytes=uploaded_image(),
+        image_filename="sample.png",
+        targets=["container_number"],
+        engine_name="paddle_gpu",
+        request_id=None,
+        settings=Settings(container_check_digit_fallback=True),
+    )
+
+    result = response.results["container_number"]
+    assert result.observed_value == "HASU5060396"
+    assert result.verification == "verified"
+    assert result.postprocessing["selection"]["digit"] == "2"
+    assert result.postprocessing["context_fallback"]["observed_value"] == "HASU5060396"
