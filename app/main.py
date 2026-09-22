@@ -10,6 +10,7 @@ from app.api.router import router
 from app.config import get_settings
 from app.engines import create_engine
 from app.engines.base import EngineError, EngineUnavailableError
+from app.engines.check_digit_recognizer import create_check_digit_recognizer
 
 
 @asynccontextmanager
@@ -17,6 +18,11 @@ async def lifespan(_: FastAPI):
     settings = get_settings()
     if settings.preload_model and settings.default_engine.startswith("paddle_"):
         create_engine(settings.default_engine, settings)
+        if settings.container_check_digit_fallback:
+            device = (
+                "cpu" if settings.default_engine == "paddle_cpu" else settings.paddle_device
+            )
+            create_check_digit_recognizer(settings.check_digit_model, device)
     yield
 
 

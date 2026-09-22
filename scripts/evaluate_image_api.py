@@ -238,6 +238,7 @@ def evaluate_payload(
     suggested_exact = bool(expected and suggested == expected)
     candidate_contains = bool(expected and expected in candidate_values)
     verification = str(result.get("verification") or "not_applicable")
+    postprocessing = result.get("postprocessing") or {}
 
     if not expected:
         outcome = "missing_truth"
@@ -276,6 +277,9 @@ def evaluate_payload(
         "engine": payload.get("engine"),
         "ocr_source": payload.get("ocr_source"),
         "request_id": payload.get("request_id"),
+        "postprocessing_status": postprocessing.get("status"),
+        "postprocessing_strategy": postprocessing.get("strategy"),
+        "postprocessing_model": postprocessing.get("model_name"),
     }
 
 
@@ -304,7 +308,18 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             if isinstance(row.get("service_elapsed_ms"), (int, float))
         ]
         verification = Counter(str(row.get("verification") or "unknown") for row in success)
+        postprocessing = Counter(
+            str(row.get("postprocessing_status") or "not_reported") for row in success
+        )
         observed_exact = sum(bool(row.get("observed_exact")) for row in eligible)
+        verified_exact = sum(
+            bool(row.get("observed_exact")) and row.get("verification") == "verified"
+            for row in eligible
+        )
+        false_verified = sum(
+            not row.get("observed_exact") and row.get("verification") == "verified"
+            for row in eligible
+        )
         suggested_exact = sum(bool(row.get("suggested_exact")) for row in eligible)
         candidate_contains = sum(bool(row.get("candidate_contains")) for row in eligible)
         output[target] = {
@@ -316,8 +331,12 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             "evaluated": len(eligible),
             "outcomes": dict(sorted(counts.items())),
             "verification": dict(sorted(verification.items())),
+            "postprocessing": dict(sorted(postprocessing.items())),
             "observed_top1_exact": observed_exact,
             "observed_top1_accuracy": _percent(observed_exact, len(eligible)),
+            "verified_exact": verified_exact,
+            "verified_exact_accuracy": _percent(verified_exact, len(eligible)),
+            "false_verified": false_verified,
             "suggested_top1_exact": suggested_exact,
             "suggested_top1_accuracy": _percent(suggested_exact, len(eligible)),
             "candidate_contains": candidate_contains,

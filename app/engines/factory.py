@@ -6,6 +6,7 @@ from functools import lru_cache
 
 from app.config import Settings, get_settings
 from app.engines.base import EngineError, OcrEngine
+from app.engines.check_digit_recognizer import clear_check_digit_recognizer_cache
 from app.engines.json_engine import JsonEngine
 from app.engines.mock_engine import MockEngine
 from app.engines.paddleocr_engine import PaddleOcrEngine
@@ -48,6 +49,7 @@ def create_engine(name: str, settings: Settings | None = None) -> OcrEngine:
 
 def clear_engine_cache() -> None:
     create_engine.cache_clear()
+    clear_check_digit_recognizer_cache()
     with _LOADED_LOCK:
         _LOADED_ENGINES.clear()
 

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: das-photo-ai:0.3.0
+    image: das-photo-ai:0.4.0
     container_name: das-photo-ai
     restart: unless-stopped
     runtime: nvidia
@@ -21,6 +21,10 @@ services:
       DAS_AI_PADDLE_DEVICE: gpu:0
       DAS_AI_PADDLE_OCR_VERSION: PP-OCRv5
       DAS_AI_SEAL_MULTI_ORIENTATION: "1"
+      DAS_AI_CONTAINER_CHECK_DIGIT_FALLBACK: "1"
+      DAS_AI_CHECK_DIGIT_MODEL: en_PP-OCRv5_mobile_rec
+      DAS_AI_CHECK_DIGIT_MIN_CANDIDATE_SCORE: "0.50"
+      DAS_AI_CHECK_DIGIT_MIN_SINGLE_SCORE: "0.70"
       DAS_AI_MAX_IMAGE_MB: 25
     volumes:
       - ${DAS_AI_PADDLEX_CACHE:-/home/lucas/ai-lab/cache/paddlex}:/root/.paddlex

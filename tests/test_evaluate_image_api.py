@@ -28,6 +28,11 @@ def test_evaluate_container_keeps_observed_and_suggested_separate() -> None:
                 "suggested_value": "HASU5060396",
                 "verification": "unverified",
                 "validation": "inferred",
+                "postprocessing": {
+                    "status": "not_found",
+                    "strategy": "english_check_digit_direct_recognition",
+                    "model_name": "en_PP-OCRv5_mobile_rec",
+                },
                 "candidates": [
                     {
                         "observed_value": "HASU506039",
@@ -45,6 +50,8 @@ def test_evaluate_container_keeps_observed_and_suggested_separate() -> None:
     assert result["suggested_exact"] is True
     assert result["candidate_contains"] is True
     assert result["verification"] == "unverified"
+    assert result["postprocessing_status"] == "not_found"
+    assert result["postprocessing_model"] == "en_PP-OCRv5_mobile_rec"
 
 
 def test_evaluate_seal_exact() -> None:
@@ -79,6 +86,7 @@ def test_summary_reports_strict_and_suggested_accuracy() -> None:
             "suggested_exact": True,
             "candidate_contains": True,
             "verification": "unverified",
+            "postprocessing_status": "not_found",
             "service_elapsed_ms": 500.0,
         },
         {
@@ -90,6 +98,7 @@ def test_summary_reports_strict_and_suggested_accuracy() -> None:
             "suggested_exact": True,
             "candidate_contains": True,
             "verification": "verified",
+            "postprocessing_status": "applied",
             "service_elapsed_ms": 300.0,
         },
     ]
@@ -98,6 +107,30 @@ def test_summary_reports_strict_and_suggested_accuracy() -> None:
 
     assert result["evaluated"] == 2
     assert result["observed_top1_accuracy"] == 0.5
+    assert result["verified_exact"] == 1
+    assert result["false_verified"] == 0
     assert result["suggested_top1_accuracy"] == 1.0
     assert result["verification"] == {"unverified": 1, "verified": 1}
+    assert result["postprocessing"] == {"applied": 1, "not_found": 1}
     assert result["service_elapsed_ms"]["median"] == 300.0
+
+
+def test_summary_reports_false_verified_container_result() -> None:
+    result = summarize(
+        [
+            {
+                "target": "container_number",
+                "api_success": True,
+                "expected": "HASU5060396",
+                "outcome": "wrong",
+                "observed_exact": False,
+                "suggested_exact": False,
+                "candidate_contains": False,
+                "verification": "verified",
+                "service_elapsed_ms": 100.0,
+            }
+        ]
+    )["container_number"]
+
+    assert result["verified_exact"] == 0
+    assert result["false_verified"] == 1

@@ -2,12 +2,13 @@
 
 DAS Photo的独立OCR推理与业务字段提取服务。
 
-当前版本为`0.3.0`：Windows可以使用Mock/JSON进行开发测试；P3可以通过独立Docker容器使用PaddleOCR GPU直接识别图片。
+当前版本为`0.4.0`：Windows可以使用Mock/JSON进行开发测试；P3可以通过独立Docker容器使用PaddleOCR GPU直接识别图片，并在通用OCR缺少箱号校验位时调用英文识别模型完成后备识别。
 
 - [v1开发说明书](docs/development_plan_v1_20260922.md)
 - [v0.2.0评估基线](docs/evaluation_v0.2.0_20260922.md)
 - [v0.2.0 P3端到端评估](docs/p3_evaluation_v0.2.0_20260922.md)
 - [P3部署说明](docs/p3_deployment_v0.2.0_20260922.md)
+- [0.4.0 P3升级与回归说明](docs/p3_upgrade_v0.4.0_20260922.md)
 
 ## 当前能力
 
@@ -22,6 +23,7 @@ DAS Photo的独立OCR推理与业务字段提取服务。
 - 铅封号原图、顺时针90度、逆时针90度自动识别与候选融合；
 - 箱号校验位区域裁剪、放大对照测试工具；
 - 箱号校验位单字符直接识别、去框预处理和多变体安全融合实验工具；
+- 正式图片API中的英文校验位后备识别、模型复用和审计信息；
 - P3 GPU Docker部署配置；
 - 离线回归和自动测试。
 
@@ -135,12 +137,15 @@ Compose默认：
 - 使用`paddle_gpu`；
 - 使用`gpu:0`；
 - 启动时预加载模型；
+- 预加载`en_PP-OCRv5_mobile_rec`校验位专用模型；
+- 通用OCR只得到箱号前10位时自动运行校验位后备识别；
 - 只绑定P3本机`127.0.0.1:8800`；
 - 复用`/home/lucas/ai-lab/cache`下现有模型缓存；
 - 不配置永久代理；
 - 不影响现有MySQL容器。
 
 详细步骤见[P3部署说明](docs/p3_deployment_v0.2.0_20260922.md)。
+从0.3.0升级并运行正式API回归见[0.4.0 P3升级与回归说明](docs/p3_upgrade_v0.4.0_20260922.md)。
 
 ## 测试
 
@@ -310,6 +315,11 @@ sudo chown -R lucas:lucas \
 宿主机缓存时不需要联网；如果缓存里缺少`PP-OCRv5_server_rec`，PaddleOCR会尝试联网下载。
 输出重点查看`direct_recognition_rescued`、`selected_false_verified`、
 `selection_statuses`以及`still_unverified_or_wrong`，同时可在`crops`中查看三种实际输入图。
+
+P3使用通用`PP-OCRv5_server_rec`时救回5/6；改用官方英文模型
+`en_PP-OCRv5_mobile_rec`后救回6/6，`inner_gray`变体6张全部正确且平均置信度为
+0.990724。固定89张开发集由此累计达到89/89，错误验证为0。0.4.0已把该策略接入正式
+图片API，但此成绩仍需通过完整API回归和新照片盲测确认，不能直接当作生产准确率。
 
 ## 模型文件
 

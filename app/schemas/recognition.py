@@ -78,6 +78,7 @@ class FieldResultResponse(BaseModel):
     check_digit_source: Literal["observed", "calculated"] | None = None
     orientation: str | None = None
     candidates: list[CandidateResponse] = Field(default_factory=list)
+    postprocessing: dict[str, Any] = Field(default_factory=dict)
 
 
 class RecognizeResponse(BaseModel):

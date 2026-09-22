@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 
 from app.config import Settings
 from app.domain import EngineInput, OCRDocument
 from app.engines import create_engine
+from app.engines.check_digit_recognizer import create_check_digit_recognizer
 from app.pipelines import extract_container_numbers, extract_seal_numbers
+from app.pipelines.check_digit_fallback import apply_check_digit_fallback
 from app.pipelines.common import ExtractionCandidate
 from app.pipelines.seal_fusion import fuse_seal_candidates
 from app.schemas.recognition import (
@@ -19,7 +22,8 @@ from app.schemas.recognition import (
 )
 
 
-EXTRACTOR_VERSION = "0.3.0"
+EXTRACTOR_VERSION = "0.4.0"
+logger = logging.getLogger(__name__)
 
 
 def _candidate_response(candidate: ExtractionCandidate) -> CandidateResponse:
@@ -48,10 +52,15 @@ def _candidate_response(candidate: ExtractionCandidate) -> CandidateResponse:
 def _field_result(
     target: TargetName,
     candidates: list[ExtractionCandidate],
+    postprocessing: dict[str, object] | None = None,
 ) -> FieldResultResponse:
     responses = [_candidate_response(candidate) for candidate in candidates]
     if not responses:
-        return FieldResultResponse(target=target, status="not_found")
+        return FieldResultResponse(
+            target=target,
+            status="not_found",
+            postprocessing=postprocessing or {},
+        )
     best = responses[0]
     return FieldResultResponse(
         target=target,
@@ -68,7 +77,62 @@ def _field_result(
         check_digit_source=best.check_digit_source,
         orientation=best.orientation,
         candidates=responses,
+        postprocessing=postprocessing or {},
     )
+
+
+def _apply_container_check_digit_fallback(
+    *,
+    candidates: list[ExtractionCandidate],
+    image_bytes: bytes | None,
+    engine_name: str,
+    settings: Settings,
+) -> tuple[list[ExtractionCandidate], dict[str, object]]:
+    if (
+        not settings.container_check_digit_fallback
+        or not image_bytes
+        or not engine_name.startswith("paddle_")
+    ):
+        return candidates, {}
+    if not candidates:
+        return candidates, {"status": "not_eligible", "reason": "no_container_candidate"}
+
+    best = candidates[0]
+    if (
+        best.verification != "unverified"
+        or len(best.observed_value) != 10
+        or not best.boxes
+    ):
+        return candidates, {
+            "status": "not_needed",
+            "reason": "best_candidate_is_not_an_unverified_10_character_value",
+        }
+
+    device = "cpu" if engine_name == "paddle_cpu" else settings.paddle_device
+    try:
+        recognizer = create_check_digit_recognizer(
+            settings.check_digit_model,
+            device,
+        )
+        completed, metadata = apply_check_digit_fallback(
+            image_bytes,
+            best,
+            recognizer,
+            minimum_candidate_score=settings.check_digit_min_candidate_score,
+            minimum_single_score=settings.check_digit_min_single_score,
+        )
+        if completed is None:
+            return candidates, metadata
+        remaining = [candidate for candidate in candidates[1:] if candidate.value != completed.value]
+        return [completed, *remaining], metadata
+    except Exception as exc:  # Optional fallback must not erase the primary OCR result.
+        logger.warning("container check-digit fallback failed: %s", exc)
+        return candidates, {
+            "status": "error",
+            "strategy": "english_check_digit_direct_recognition",
+            "model_name": settings.check_digit_model,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
 
 def _ocr_items(document: OCRDocument) -> list[OCRItemResponse]:
@@ -109,8 +173,15 @@ def _recognize_with_input(
 
     results: dict[TargetName, FieldResultResponse] = {}
     for target in targets:
+        postprocessing: dict[str, object] = {}
         if target == "container_number":
             candidates = extract_container_numbers(document, settings.max_candidates)
+            candidates, postprocessing = _apply_container_check_digit_fallback(
+                candidates=candidates,
+                image_bytes=input_data.image_bytes,
+                engine_name=engine.name,
+                settings=settings,
+            )
         else:
             candidates_by_orientation = {
                 orientation: extract_seal_numbers(variant, settings.max_candidates)
@@ -120,7 +191,7 @@ def _recognize_with_input(
                 candidates_by_orientation,
                 settings.max_candidates,
             )
-        results[target] = _field_result(target, candidates)
+        results[target] = _field_result(target, candidates, postprocessing)
 
     elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
     return RecognizeResponse(

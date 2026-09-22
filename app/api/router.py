@@ -8,6 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings, get_settings
 from app.engines import available_engines
+from app.engines.check_digit_recognizer import is_check_digit_recognizer_loaded
 from app.schemas.recognition import (
     EngineName,
     RecognizeRequest,
@@ -58,6 +59,9 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, object]:
 def models(settings: Settings = Depends(get_settings)) -> dict[str, object]:
     engines = available_engines(settings)
     paddle_engines = [item for item in engines if str(item["name"]).startswith("paddle_")]
+    check_digit_device = (
+        "cpu" if settings.default_engine == "paddle_cpu" else settings.paddle_device
+    )
     return {
         "default_engine": settings.default_engine,
         "engines": engines,
@@ -67,6 +71,18 @@ def models(settings: Settings = Depends(get_settings)) -> dict[str, object]:
             "language": settings.paddle_lang,
             "gpu_device": settings.paddle_device,
             "seal_multi_orientation": settings.seal_multi_orientation,
+        },
+        "container_check_digit": {
+            "enabled": settings.container_check_digit_fallback,
+            "available": any(bool(item["available"]) for item in paddle_engines),
+            "loaded": is_check_digit_recognizer_loaded(
+                settings.check_digit_model,
+                check_digit_device,
+            ),
+            "model_name": settings.check_digit_model,
+            "device": check_digit_device,
+            "minimum_candidate_score": settings.check_digit_min_candidate_score,
+            "minimum_single_score": settings.check_digit_min_single_score,
         },
     }
 

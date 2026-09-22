@@ -8,7 +8,7 @@ from functools import lru_cache
 @dataclass(frozen=True, slots=True)
 class Settings:
     app_name: str = "DAS Photo AI"
-    version: str = "0.3.0"
+    version: str = "0.4.0"
     api_prefix: str = "/api/v1"
     host: str = "127.0.0.1"
     port: int = 8800
@@ -23,6 +23,10 @@ class Settings:
     paddle_detection_model: str | None = None
     paddle_recognition_model: str | None = None
     seal_multi_orientation: bool = True
+    container_check_digit_fallback: bool = False
+    check_digit_model: str = "en_PP-OCRv5_mobile_rec"
+    check_digit_min_candidate_score: float = 0.50
+    check_digit_min_single_score: float = 0.70
 
     @property
     def max_image_bytes(self) -> int:
@@ -59,5 +63,21 @@ def get_settings() -> Settings:
         seal_multi_orientation=_env_bool(
             "DAS_AI_SEAL_MULTI_ORIENTATION",
             default=True,
+        ),
+        container_check_digit_fallback=_env_bool(
+            "DAS_AI_CONTAINER_CHECK_DIGIT_FALLBACK",
+            default=False,
+        ),
+        check_digit_model=os.getenv(
+            "DAS_AI_CHECK_DIGIT_MODEL",
+            "en_PP-OCRv5_mobile_rec",
+        ).strip(),
+        check_digit_min_candidate_score=min(
+            1.0,
+            max(0.0, float(os.getenv("DAS_AI_CHECK_DIGIT_MIN_CANDIDATE_SCORE", "0.50"))),
+        ),
+        check_digit_min_single_score=min(
+            1.0,
+            max(0.0, float(os.getenv("DAS_AI_CHECK_DIGIT_MIN_SINGLE_SCORE", "0.70"))),
         ),
     )

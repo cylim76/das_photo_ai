@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-import threading
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -12,6 +11,7 @@ from app.config import Settings
 from app.domain import EngineInput, OCRDocument, OCRItem
 from app.engines.base import EngineError, EngineUnavailableError, OcrEngine
 from app.engines.json_adapter import adapt_ocr_json
+from app.engines.paddle_runtime import PADDLE_RUNTIME_LOCK
 
 
 _ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
@@ -43,7 +43,6 @@ class PaddleOcrEngine(OcrEngine):
         self.name = name
         self._settings = settings
         self._device = "cpu" if name == "paddle_cpu" else settings.paddle_device
-        self._predict_lock = threading.Lock()
         self._pipeline = self._create_pipeline()
 
     @property
@@ -77,7 +76,8 @@ class PaddleOcrEngine(OcrEngine):
         if self._settings.paddle_recognition_model:
             kwargs["text_recognition_model_name"] = self._settings.paddle_recognition_model
         try:
-            return PaddleOCR(**kwargs)
+            with PADDLE_RUNTIME_LOCK:
+                return PaddleOCR(**kwargs)
         except Exception as exc:
             raise EngineUnavailableError(
                 f"PaddleOCR failed to initialize on {self._device}: {exc}"
@@ -97,7 +97,7 @@ class PaddleOcrEngine(OcrEngine):
                 temporary.write(input_data.image_bytes)
                 temporary_path = temporary.name
 
-            with self._predict_lock:
+            with PADDLE_RUNTIME_LOCK:
                 results = list(self._pipeline.predict(temporary_path))
             if not results:
                 raise EngineError("PaddleOCR returned no result for the uploaded image")
@@ -195,7 +195,7 @@ class PaddleOcrEngine(OcrEngine):
         image_filename: str | None,
         orientation: str,
     ) -> OCRDocument:
-        with self._predict_lock:
+        with PADDLE_RUNTIME_LOCK:
             results = list(self._pipeline.predict(str(image_path)))
         if not results:
             raise EngineError("PaddleOCR returned no result for the uploaded image")
