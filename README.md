@@ -21,6 +21,7 @@ DAS Photo的独立OCR推理与业务字段提取服务。
 - 铅封号候选提取与噪声过滤；
 - 铅封号原图、顺时针90度、逆时针90度自动识别与候选融合；
 - 箱号校验位区域裁剪、放大对照测试工具；
+- 箱号校验位单字符直接识别、去框预处理和多变体安全融合实验工具；
 - P3 GPU Docker部署配置；
 - 离线回归和自动测试。
 
@@ -271,6 +272,44 @@ sudo docker run --rm \
 样本。生成的裁剪图保存在`output-dir/crops`，原始API响应保存在`raw`，拼接后的结果保存
 在`postprocessed`。重点检查`isolated_check_digit_detected`、`verified_exact`、
 `selected_false_verified`以及新的`still_unverified_or_wrong`。
+
+### 箱号校验位直接识别测试
+
+`v0.3.2`在剩余12张照片中救回6张，组合累计达到83/89。未救回的6张校验位图肉眼
+可见，但OCR文字检测没有返回任何文字，其中方框和窄字符`1`可能影响检测。下面的实验
+绕过文字检测模块，直接使用PaddleOCR的`TextRecognition`识别已经裁好的校验位小图。
+
+每张图会生成三种输入：保留方框的彩色图、保留方框的灰度增强图、尝试去掉方框的灰度
+增强图。程序只接受OCR实际输出的单个数字；两个以上变体一致时采用多数结果，只有一个
+有效结果时必须达到较高置信度，变体冲突则保留人工确认。ISO 6346只在数字选定后验证，
+不会参与选择或补出数字。
+
+```bash
+cd /home/lucas/rpa/das_photo_ai
+sudo docker run --rm \
+  --runtime=nvidia \
+  --gpus all \
+  --entrypoint python \
+  -v "$PWD":/workspace:ro \
+  -v /home/lucas/ai-lab:/home/lucas/ai-lab \
+  -v /home/lucas/ai-lab/cache/paddlex:/root/.paddlex \
+  -v /home/lucas/ai-lab/cache/paddleocr:/root/.paddleocr \
+  -w /workspace \
+  das-photo-ai:0.3.0 \
+  -m scripts.evaluate_check_digit_recognition \
+  --previous-run-dir /home/lucas/ai-lab/evaluation-runs/v0.3.2-check-digit \
+  --device gpu:0 \
+  --model-name PP-OCRv5_server_rec \
+  --output-dir /home/lucas/ai-lab/evaluation-runs/v0.3.3-direct-recognition
+
+sudo chown -R lucas:lucas \
+  /home/lucas/ai-lab/evaluation-runs/v0.3.3-direct-recognition
+```
+
+这一步是独立评估，不修改正在运行的API服务，也不需要`--network host`。模型已经存在于
+宿主机缓存时不需要联网；如果缓存里缺少`PP-OCRv5_server_rec`，PaddleOCR会尝试联网下载。
+输出重点查看`direct_recognition_rescued`、`selected_false_verified`、
+`selection_statuses`以及`still_unverified_or_wrong`，同时可在`crops`中查看三种实际输入图。
 
 ## 模型文件
 
