@@ -56,6 +56,29 @@ def test_create_container_variant_includes_space_right_of_observed_number(
         assert cropped.height > (130 - 100) * 2
 
 
+def test_right_30_variant_extends_only_the_right_edge(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    Image.new("RGB", (500, 300), "white").save(source)
+    original = payload(
+        "HASU506039",
+        "unverified",
+        0.8,
+        [[100, 100, 180, 130], [190, 100, 320, 130]],
+    )
+
+    output = create_container_variant(
+        source,
+        original,
+        "right_30_2x",
+        tmp_path / "right-30.png",
+    )
+
+    assert output is not None
+    with Image.open(output) as cropped:
+        # Original observed band is 220x30; 30% is added only to the right.
+        assert cropped.size == (572, 60)
+
+
 def test_selection_prefers_observed_verified_value_without_truth() -> None:
     selected, _result = select_without_truth(
         {

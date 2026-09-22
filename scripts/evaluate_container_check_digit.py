@@ -27,7 +27,15 @@ from scripts.evaluate_image_api import (
 )
 
 
-VARIANTS = ("original", "context_2x", "context_4x", "grayscale_4x")
+VARIANTS = (
+    "original",
+    "context_2x",
+    "context_4x",
+    "grayscale_4x",
+    "right_30_2x",
+    "right_30_4x",
+    "right_30_grayscale_4x",
+)
 
 
 def _container_result(payload: dict[str, Any]) -> dict[str, Any]:
@@ -82,25 +90,37 @@ def create_container_variant(
         image_width, image_height = image.size
         left, top, right, bottom = region
         text_height = max(1.0, bottom - top)
+        text_width = max(1.0, right - left)
 
-        # The ISO check digit is often a small, separate glyph immediately to
-        # the right of the owner/serial number. Keep extra room on that side and
-        # enough vertical context for slanted or two-line markings.
-        crop_box = (
-            max(0, int(left - text_height * 0.8)),
-            max(0, int(top - text_height * 1.0)),
-            min(image_width, int(right + text_height * 3.0)),
-            min(image_height, int(bottom + text_height * 1.0)),
-        )
+        if variant.startswith("right_30_"):
+            # Field photos often put the isolated ISO check digit on the right
+            # door frame, noticeably farther away from the first ten
+            # characters. Preserve the observed number's vertical band so the
+            # container type below it (for example 45G1) is not introduced,
+            # and extend only the right edge by 30% of the observed width.
+            crop_box = (
+                max(0, int(left)),
+                max(0, int(top)),
+                min(image_width, int(right + text_width * 0.30)),
+                min(image_height, int(bottom)),
+            )
+        else:
+            # Keep the first experiment intact as a comparison baseline.
+            crop_box = (
+                max(0, int(left - text_height * 0.8)),
+                max(0, int(top - text_height * 1.0)),
+                min(image_width, int(right + text_height * 3.0)),
+                min(image_height, int(bottom + text_height * 1.0)),
+            )
         if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
             return None
         cropped = image.crop(crop_box)
-        scale = 2 if variant == "context_2x" else 4
+        scale = 2 if variant in {"context_2x", "right_30_2x"} else 4
         resized = cropped.resize(
             (cropped.width * scale, cropped.height * scale),
             Image.Resampling.LANCZOS,
         )
-        if variant == "grayscale_4x":
+        if variant in {"grayscale_4x", "right_30_grayscale_4x"}:
             resized = ImageOps.autocontrast(ImageOps.grayscale(resized)).convert("RGB")
         resized.save(destination, format="PNG")
     return destination
